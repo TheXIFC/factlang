@@ -2,7 +2,7 @@ from node import *
 from scope import *
 import static_calc as sc
 import registers as regs
-from values import Const
+from values import Const, Pointer
 
 
 class _MatchBreak(Exception):
@@ -19,15 +19,15 @@ reverse_op = {
 }
 
 
-# node types for custom children handling
-custom_nodes = [NodeType.If, NodeType.IfElse, NodeType.While]
+# pd_args - arguments that are passed down to children nodes
+# im_args - arguments only for current node
+def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, pd_args: dict, c_args: dict = None):
 
+    if c_args is None:
+        c_args = {}
 
-def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, args: dict):
-
-    if args is None:
-        args = {}
-    new_args = args.copy()
+    # node types for custom children handling
+    custom_nodes = [NodeType.Assign, NodeType.If, NodeType.IfElse, NodeType.While]
 
     custom_child_handle = False
     if node.type in custom_nodes:
@@ -40,7 +40,7 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
         for child in node.children:
             if isinstance(child, Node):
                 new_cl = []
-                parse_node(child, new_cl, scope, curr_scope, new_args)
+                parse_node(child, new_cl, scope, curr_scope, pd_args)
                 child_commands.append(new_cl)
 
     try:
@@ -63,7 +63,7 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 node.value = var
             case NodeType.UnaryOp:
                 op = node.leaf
-                if node.children[0].const:
+                if node.children[0].const and op != '*':
                     node.value = sc.unary_op(op, node.children[0].value)
                     node.const = True
                     raise _MatchBreak()
@@ -77,6 +77,15 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 if op == '-':
                     cl.append({'op': 'write', 'to': regs.unary_minus, 'from': node.children[0].value})
                     cl.append({'op': 'write', 'to': tmp_var, 'from': regs.unary_minus})
+
+                elif op == '*':
+                    ptr = Pointer(node.children[0].value)
+                    if not ptr.const:
+                        cl.append({'op': 'write', 'to': regs.ptr, 'from': node.children[0].value})
+                        ptr.reg = regs.ptr
+                    cl.append({'op': 'write', 'to': tmp_var, 'from': ptr})
+
+                node.value = tmp_var
 
             case NodeType.Exp:
                 if node.children[0].const and node.children[1].const:
@@ -162,16 +171,34 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 node.value = res
 
             case NodeType.Assign:
-                name = node.children[0]
-                expression = node.children[1]
+                lvalue_cl = []
+                expr_cl = []
+                lvalue_node = node.children[0]
+                expr_node = node.children[1]
                 op = node.leaf
 
-                var = scope.get_var(name, create=curr_scope)
+                parse_node_as_lvalue(lvalue_node, lvalue_cl, scope, curr_scope, pd_args)
+                parse_node(expr_node, expr_cl, scope, curr_scope, pd_args)
+                command_list.extend(lvalue_cl)
+                command_list.extend(expr_cl)
 
-                # TODO add other operations
-                command = {'op': 'write', 'to': var, 'from': expression.value}
+                lvalue = lvalue_node.value
 
-                cl.append(command)
+                if isinstance(lvalue, Var):
+                    cl.append({'op': 'write', 'to': lvalue, 'from': expr_node.value})
+                elif isinstance(lvalue, Pointer):
+                    if lvalue.const:
+                        # to = Var('global', lvalue.shift_const, '/direct_mem_access')
+                        cl.append({'op': 'write', 'to': lvalue, 'from': expr_node.value})
+                    else:
+                        cl.append({'op': 'write', 'to': regs.ptr, 'from': lvalue.origin})
+                        lvalue.reg = regs.ptr
+                        if lvalue.shift_var is not None:
+                            cl.append({'op': 'write', 'to': regs.ptr_shift, 'from': lvalue.shift_var})
+                            lvalue.reg = regs.ptr_shift
+                        cl.append({'op': 'write', 'to': lvalue, 'from': expr_node.value})
+                else:
+                    raise Exception()
 
             case NodeType.Relational:
                 op = node.leaf
@@ -245,7 +272,7 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
             case NodeType.If:
                 condition_node = node.leaf
                 condition_cl = []
-                parse_node(condition_node, condition_cl, scope, curr_scope, new_args)
+                parse_node(condition_node, condition_cl, scope, curr_scope, pd_args)
                 condition_node.cleanup(scope)
 
                 if_end_label = {'label': 'if_end'}
@@ -255,14 +282,14 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 inner_scope = scope.copy()
                 body_cl = []
                 body_node = node.children[0]
-                parse_node(body_node, body_cl, inner_scope, curr_scope, new_args)
+                parse_node(body_node, body_cl, inner_scope, curr_scope, pd_args)
                 cl.extend(body_cl)
                 cl.append(if_end_label)
 
             case NodeType.IfElse:
                 condition_node = node.leaf
                 condition_cl = []
-                parse_node(condition_node, condition_cl, scope, curr_scope, new_args)
+                parse_node(condition_node, condition_cl, scope, curr_scope, pd_args)
                 condition_node.cleanup(scope)
 
                 if_end_label = {'label': 'if_end'}
@@ -273,7 +300,7 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 inner_scope = scope.copy()
                 true_cl = []
                 true_node = node.children[0]
-                parse_node(true_node, true_cl, inner_scope, curr_scope, new_args)
+                parse_node(true_node, true_cl, inner_scope, curr_scope, pd_args)
                 cl.extend(true_cl)
                 cl.append({'op': 'jump', 'destination': if_end_label})
 
@@ -281,18 +308,19 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 inner_scope = scope.copy()
                 false_cl = []
                 false_node = node.children[1]
-                parse_node(false_node, false_cl, inner_scope, curr_scope, new_args)
+                parse_node(false_node, false_cl, inner_scope, curr_scope, pd_args)
                 cl.extend(false_cl)
                 cl.append(if_end_label)
 
             case NodeType.While:
                 condition_node = node.leaf
                 condition_cl = []
-                parse_node(condition_node, condition_cl, scope, curr_scope, new_args)
+                parse_node(condition_node, condition_cl, scope, curr_scope, pd_args)
 
                 while_start_label = {'label': 'while_start'}
                 while_end_label = {'label': 'while_end'}
 
+                new_args = pd_args.copy()
                 new_args['continue'] = while_start_label
                 new_args['breaK'] = while_end_label
 
@@ -310,15 +338,15 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
                 cl.append(while_end_label)
 
             case NodeType.Continue:
-                if 'continue' not in args:
+                if 'continue' not in pd_args:
                     raise Exception("Continue use outside of loop")
-                continue_label = args['continue']
+                continue_label = pd_args['continue']
                 cl.append({'op': 'jump', 'destination': continue_label})
 
             case NodeType.Break:
-                if 'break' not in args:
+                if 'break' not in pd_args:
                     raise Exception("Break use outside of loop")
-                break_label = args['break']
+                break_label = pd_args['break']
                 cl.append({'op': 'jump', 'destination': break_label})
 
             case _:
@@ -335,3 +363,42 @@ def parse_node(node: Node, command_list: list, scope: Scope, curr_scope: str, ar
             command_list.extend(child_cl)
     command_list.extend(cl)
 
+
+def parse_node_as_lvalue(node: Node, command_list: list, scope: Scope, curr_scope: str, pd_args: dict, c_args: dict = None):
+    if c_args is None:
+        c_args = {}
+
+    cl = []  # current command list
+
+    try:
+        match node.type:
+            case NodeType.Var:
+                name = node.leaf
+                var = scope.get_var(name, create=curr_scope)
+                node.value = var
+            case NodeType.UnaryOp:
+                if node.leaf != '*':
+                    raise Exception()
+
+                child_cl = []
+                expr = node.children[0]
+                parse_node(expr, child_cl, scope, curr_scope, pd_args)
+
+                node.value = Pointer(expr.value)
+                cl.extend(child_cl)
+
+                if isinstance(expr.value, Var) and expr.value.is_temp:
+                    node.temp_vars.append(expr.value)
+                    expr.temp_vars.remove(expr.value)
+
+            case _:
+                raise Exception()
+    except _MatchBreak:
+        pass
+    except Exception:
+        raise Exception("Node is not an lvalue")
+
+    for child in node.children:
+        if isinstance(child, Node):
+            node.cleanup(scope)
+    command_list.extend(cl)

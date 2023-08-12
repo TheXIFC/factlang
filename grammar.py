@@ -185,7 +185,7 @@ def p_assignment_op(p):
 
 
 def p_assignment_exp(p):
-    """assignment_expression : ID assignment_operator assignment_expression"""
+    """assignment_expression : unary_expression assignment_operator assignment_expression"""
     p[0] = Node(NodeType.Assign, p[2], [p[1], p[3]])
 
 

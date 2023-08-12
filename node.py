@@ -29,6 +29,7 @@ class Node:
     def __init__(self, type: NodeType, leaf=None, children=None):
         self.const = False
         self.temp_vars = []
+        self.value = None
 
         self.type = type
         if children:

@@ -3,9 +3,10 @@ import copy
 import json
 import zlib
 
-from values import Var
+from values import Var, Pointer
 from values import Const
 from signals_types import signal_type_dict
+import registers as regs
 
 
 class OpInfo:
@@ -124,15 +125,29 @@ def command_to_filters(command):
 
     if op == 'write' or op == 'write_add':
         to = command['to']
-        addr = to.addr
-        if to.scope == 'global':
-            if (addr + global_scope_start) == 0:
-                raise Exception("Trying to access memory 0")
-            filters.append(get_letter_filter('W', addr + global_scope_start))
-        elif to.scope == 'local':
-            filters.append(get_letter_filter('P', 1))  # stack pointer
-            if addr != 0:
+        if isinstance(to, Var):
+            addr = to.addr
+            if to.scope == 'global':
+                addr += global_scope_start
+            if to.scope == 'global' or to.scope == 'absolute':
+                if addr == 0:
+                    raise Exception("Trying to access memory 0")
                 filters.append(get_letter_filter('W', addr))
+            elif to.scope == 'local':
+                filters.append(get_letter_filter('P', 1))  # stack pointer
+                if addr != 0:
+                    filters.append(get_letter_filter('W', addr))
+        elif isinstance(to, Pointer):
+            if to.const:
+                addr = to.shift_const
+                if addr == 0:
+                    raise Exception("Trying to access memory 0")
+                filters.append(get_letter_filter('W', addr))
+            else:
+                filters.append(get_letter_filter('P', regs.ptr_reg_num[to.reg]))
+                if to.shift_const != 0:
+                    filters.append(get_letter_filter('W', to.shift_const))
+
         if op == 'write_add':
             filters.append(get_letter_filter('A', 3))
     elif op == 'c_jump':
@@ -173,9 +188,11 @@ def parse_from_field(frm, filters: list):
         if isinstance(out, Var):
             addr = out.addr
             if out.scope == 'global':
-                if (addr + global_scope_start) == 0:
+                addr += global_scope_start
+            if out.scope == 'global' or out.scope == 'absolute':
+                if addr == 0:
                     raise Exception("Trying to access memory 0")
-                filters.append(get_letter_filter('O', addr + global_scope_start))
+                filters.append(get_letter_filter('O', addr))
             elif out.scope == 'local':
                 filters.append(get_letter_filter('U', 1))  # stack pointer
                 if addr != 0:
@@ -197,3 +214,14 @@ def parse_from_field(frm, filters: list):
                 flt['signal']['type'] = signal_type
                 flt['count'] = count
                 filters.append(flt)
+
+        elif isinstance(out, Pointer):
+            addr = out.shift_const
+            if out.const:
+                if addr == 0:
+                    raise Exception("Trying to access memory 0")
+                filters.append(get_letter_filter('O', addr))
+            else:
+                filters.append(get_letter_filter('U', regs.ptr_reg_num[out.reg]))
+                if addr != 0:
+                    filters.append(get_letter_filter('O', addr))

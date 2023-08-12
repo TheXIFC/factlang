@@ -2,7 +2,7 @@ from values import Var
 
 
 def __create_reg__(addr):
-    return Var('global', addr, '/reg')
+    return Var('absolute', addr, '/reg')
 
 
 mul = __create_reg__(-1)
@@ -23,6 +23,22 @@ less_eq = __create_reg__(-16)
 gr_than = __create_reg__(-17)
 gr_eq = __create_reg__(-18)
 
+
+stack_ptr = __create_reg__(-101)
+stack_shift = __create_reg__(-102)
+ptr = __create_reg__(-103)
+ptr_shift = __create_reg__(-104)
+
+
+jump = __create_reg__(-200)
+
+
+ptr_reg_num = {
+    stack_ptr: 1,
+    stack_shift: 2,
+    ptr: 3,
+    ptr_shift: 4
+}
 
 
 
